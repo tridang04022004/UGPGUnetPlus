@@ -11,15 +11,64 @@ from matplotlib.colors import ListedColormap
 from data.dataset import HerlevNucleiDataset
 from unet_model.unet import UNet1, UNet2, UNet3, UNet4
 from unet_model.dice_loss import dice_coeff
+from unet_model.unet_parts import up, down, inconv, outconv
+import torch.nn as nn
+
+
+# Legacy UNet4 class for loading old checkpoints with classic up() modules
+class UNet4Legacy(nn.Module):
+    """Legacy UNet4 using classic up() modules instead of ResidualModule"""
+    def __init__(self, n_channels, n_classes):
+        super(UNet4Legacy, self).__init__()
+        self.inc = inconv(n_channels, 64)
+        self.down1 = down(64, 128)
+        self.down2 = down(128, 256)
+        self.down3 = down(256, 512)
+        self.down4 = down(512, 512)
+        self.up1 = up(1024, 256)  # Classic U-Net with encoder skip
+        self.up2 = up(512, 128)   # Classic U-Net with encoder skip
+        self.up3 = up(256, 64)    # Classic U-Net with encoder skip
+        self.up4 = up(128, 64)    # Classic U-Net with encoder skip
+        self.outc1 = outconv(256, n_classes)
+        self.outc2 = outconv(128, n_classes)
+        self.outc3 = outconv(64, n_classes)
+        self.outc4 = outconv(64, n_classes)
+    
+    def forward(self, x):
+        x1 = self.inc(x)
+        x2 = self.down1(x1)
+        x3 = self.down2(x2)
+        x4 = self.down3(x3)
+        x5 = self.down4(x4)
+        x6 = self.up1(x5, x4)  # Classic U-Net: concatenates encoder skip x4
+        x7 = self.up2(x6, x3)  # Classic U-Net: concatenates encoder skip x3
+        x8 = self.up3(x7, x2)  # Classic U-Net: concatenates encoder skip x2
+        x9 = self.up4(x8, x1)  # Classic U-Net: concatenates encoder skip x1
+        x6 = self.outc1(x6)
+        x7 = self.outc2(x7)
+        x8 = self.outc3(x8)
+        x9 = self.outc4(x9)
+        x6 = nn.functional.interpolate(x6, scale_factor=(8, 8), mode='bilinear', align_corners=True)
+        x7 = nn.functional.interpolate(x7, scale_factor=(4, 4), mode='bilinear', align_corners=True)
+        x8 = nn.functional.interpolate(x8, scale_factor=(2, 2), mode='bilinear', align_corners=True)
+        x = x6 + x7 + x8 + x9
+        return x
 
 
 def detect_model_from_checkpoint(checkpoint):
     """Detect which UNet model was used based on checkpoint structure"""
     state_dict = checkpoint['model_state_dict']
     
+    # Check if this is a legacy model (has up.conv instead of ResidualModule's path_g/path_f_convs)
+    has_legacy_up = any('up1.conv.conv' in key for key in state_dict.keys())
+    has_residual_module = any('up1.path_g' in key or 'up1.path_f_convs' in key for key in state_dict.keys())
+    
     # Check if stage info is available (from progressive training)
     if 'stage' in checkpoint:
         stage = checkpoint['stage']
+        # For stage 4, check if it's legacy or new architecture
+        if stage == 4 and has_legacy_up:
+            return UNet4Legacy, 4
         model_map = {1: UNet1, 2: UNet2, 3: UNet3, 4: UNet4}
         return model_map[stage], stage
     
@@ -39,6 +88,9 @@ def detect_model_from_checkpoint(checkpoint):
     if has_down1 and has_up4 and has_outc4:
         # UNet4: has down1, up4, outc4, inc has 64 channels
         if inc_channels == 64:
+            # Check if legacy or new architecture
+            if has_legacy_up:
+                return UNet4Legacy, 4
             return UNet4, 4
     
     if not has_down1 and not has_up4 and not has_outc4:
@@ -61,6 +113,11 @@ def detect_model_from_checkpoint(checkpoint):
         if inc_channels == 512:
             return UNet1, 1
     
+    # Default to UNet4Legacy if detection fails and it's a legacy checkpoint
+    if has_legacy_up:
+        print("Warning: Could not reliably detect model type, defaulting to UNet4Legacy")
+        return UNet4Legacy, 4
+    
     # Default to UNet4 if detection fails
     print("Warning: Could not reliably detect model type, defaulting to UNet4")
     return UNet4, 4
@@ -80,8 +137,11 @@ class Predictor:
         
         # Get image size if available
         img_size = checkpoint.get('img_size', 'unknown')
-        print(f"Detected model: UNet{stage} @ {img_size}x{img_size}" if img_size != 'unknown' 
-              else f"Detected model: UNet{stage}")
+        model_type = "Legacy" if model_class == UNet4Legacy else ""
+        if img_size != 'unknown':
+            print(f"Detected model: {model_type}UNet{stage} @ {img_size}x{img_size}".strip())
+        else:
+            print(f"Detected model: {model_type}UNet{stage}".strip())
         
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.model = self.model.to(self.device)
