@@ -1,14 +1,11 @@
 # Essential packages for PGU-net project
-numpy==2.2.1
+numpy>=1.26.4,<2.0.0
 matplotlib==3.10.5
 scikit-image==0.24.0
 scipy==1.13.1
 pyparsing==3.1.4
 
-# PyTorch - Use one of the following installation methods:
-
-# For Python 3.12 + CUDA 11.8:
-# conda install pytorch==2.5.1 torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia
+# conda install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
 
 # Additional packages for visualization and utilities
 Pillow>=8.0.0
