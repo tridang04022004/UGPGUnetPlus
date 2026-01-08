@@ -3,6 +3,7 @@ from pathlib import Path
 import random
 import numpy as np
 import torch
+import torch.nn.functional as F
 from PIL import Image
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
@@ -72,7 +73,7 @@ class Predictor:
         print(f"Using device: {self.device}")
         
         # Load checkpoint and detect model architecture
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
         
         model_class, stage = detect_model_from_checkpoint(checkpoint)
         self.model = model_class(n_channels=3, n_classes=3)
@@ -98,7 +99,7 @@ class Predictor:
         with torch.no_grad():
             image = image_tensor.unsqueeze(0).to(self.device)
             output = self.model(image)
-            probs = torch.exp(output)  # Convert from log probabilities
+            probs = F.softmax(output, dim=1)  # Convert from logits to probabilities
             pred = torch.argmax(probs, dim=1)
             return pred.squeeze(0).cpu().numpy(), probs.squeeze(0).cpu().numpy()
     

@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -15,6 +16,7 @@ import torchvision.transforms as transforms
 from data.dataset import HerlevNucleiDataset
 from unet_model.unet import UNet1, UNet2, UNet3, UNet4
 from unet_model.dice_loss import dice_coeff
+from unet_model.focal_loss import CombinedLoss
 
 
 def calculate_f1_score(pred, target):
@@ -118,7 +120,15 @@ class ProgressiveTrainer:
         self.model = UNet1(n_channels=3, n_classes=3).to(self.device)
         
         # Optimizer and loss
-        self.criterion = nn.NLLLoss()
+        # Combined Focal Loss (focuses on hard examples) + Dice Loss (region overlap)
+        self.criterion = CombinedLoss(
+            focal_weight=0.5,      # Weight for focal loss
+            dice_weight=0.5,       # Weight for dice loss
+            focal_gamma=2.0,       # Focal loss focusing parameter
+            focal_alpha=None,      # Class weights (None = balanced)
+            dice_smooth=1.0,       # Dice smoothing constant
+            ignore_background=False # Include background in dice calculation
+        )
         self.optimizer = optim.RMSprop(
             self.model.parameters(), 
             lr=args.lr, 
@@ -250,18 +260,18 @@ class ProgressiveTrainer:
                 
                 # Forward pass
                 outputs = self.model(images)
-                loss = self.criterion(outputs, masks)
+                combined_loss, focal_loss, dice_loss = self.criterion(outputs, masks)
                 
                 # Backward pass
                 self.optimizer.zero_grad()
-                loss.backward()
+                combined_loss.backward()
                 self.optimizer.step()
                 
                 # Calculate metrics
-                total_loss += loss.item()
+                total_loss += combined_loss.item()
                 
                 with torch.no_grad():
-                    probs = torch.exp(outputs)
+                    probs = F.softmax(outputs, dim=1)
                     preds = torch.argmax(probs, dim=1)
                     
                     # Store for dice calculation
@@ -279,7 +289,7 @@ class ProgressiveTrainer:
                         total_f1 += f1
                         total_iou += iou
                 
-                pbar.set_postfix({'loss': f'{loss.item():.4f}'})
+                pbar.set_postfix({'loss': f'{combined_loss.item():.4f}'})
         
         # Calculate dice score
         all_preds = torch.cat(all_preds, dim=0)
@@ -311,7 +321,7 @@ class ProgressiveTrainer:
                 
                 # Get predictions
                 outputs = self.model(images)
-                probs = torch.exp(outputs)
+                probs = F.softmax(outputs, dim=1)
                 preds = torch.argmax(probs, dim=1)
                 
                 # Log each image in the batch
@@ -376,11 +386,11 @@ class ProgressiveTrainer:
                     masks = masks.to(self.device)
                     
                     outputs = self.model(images)
-                    loss = self.criterion(outputs, masks)
+                    combined_loss, focal_loss, dice_loss = self.criterion(outputs, masks)
                     
-                    total_loss += loss.item()
+                    total_loss += combined_loss.item()
                     
-                    probs = torch.exp(outputs)
+                    probs = F.softmax(outputs, dim=1)
                     preds = torch.argmax(probs, dim=1)
                     
                     # Store for dice calculation
