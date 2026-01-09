@@ -118,9 +118,9 @@ class ProgressiveTrainer:
         self.model = UNet1(n_channels=3, n_classes=3).to(self.device)
         
         self.criterion = CombinedLoss(
-            focal_weight=0.45,      
-            dice_weight=0.45,       
-            boundary_weight=0.1,
+            focal_weight=0.475,      
+            dice_weight=0.475,       
+            boundary_weight=0.05,
             focal_gamma=2.0,       
             focal_alpha=None,      
             dice_smooth=1.0,       
