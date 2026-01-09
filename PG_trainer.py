@@ -97,6 +97,7 @@ class ProgressiveTrainer:
                     'letterboxing': True,
                     'stage_epochs': args.stage_epochs,
                     'optimizer': 'RMSprop',
+                    'uncertainty_guidance': args.use_uncertainty_guidance,
                 }
             )
             print("Wandb initialized successfully")
@@ -108,6 +109,7 @@ class ProgressiveTrainer:
         self.stage_img_sizes = [32, 64, 128, 256]
         self.stage_models = [UNet1, UNet2, UNet3, UNet4]
         self.stage_epochs = args.stage_epochs  # Epochs per stage
+        self.use_uncertainty_guidance = args.use_uncertainty_guidance
         
         self.img_size = self.stage_img_sizes[0]
         self.load_datasets()
@@ -233,14 +235,49 @@ class ProgressiveTrainer:
         all_preds = []
         all_targets = []
         
-        with tqdm(self.train_loader, desc=f'Training (Stage {self.current_stage})') as pbar:
+        mode_desc = 'Training (UG)' if self.use_uncertainty_guidance else 'Training'
+        with tqdm(self.train_loader, desc=f'{mode_desc} (Stage {self.current_stage})') as pbar:
             for images, masks in pbar:
                 images = images.to(self.device)
                 masks = masks.to(self.device)
                 
-                outputs = self.model(images)
-                combined_loss, focal_loss, dice_loss = self.criterion(outputs, masks)
+                if self.use_uncertainty_guidance:
+                    
+                    # Round 1: Coarse Prediction
+                    outputs1 = self.model(images)
+                    loss1, _, _ = self.criterion(outputs1, masks)
+                    
+                    with torch.no_grad():
+                        probs1 = F.softmax(outputs1, dim=1)
+                        U1 = calculate_uncertainty_map(probs1)  # (B, H, W)
+                        attention1 = U1.unsqueeze(1)  # (B, 1, H, W)
+                    
+                    # Round 2: Uncertainty-Guided Refinement
+                    guided_images2 = images * (1.0 + attention1)  # Amplify uncertain regions
+                    outputs2 = self.model(guided_images2)
+                    loss2, _, _ = self.criterion(outputs2, masks)
+                    
+                    with torch.no_grad():
+                        probs2 = F.softmax(outputs2, dim=1)
+                        U2 = calculate_uncertainty_map(probs2)
+                        attention2 = U2.unsqueeze(1)
+                    
+                    # Round 3: Final Refinement
+                    guided_images3 = images * (1.0 + attention2)
+                    outputs3 = self.model(guided_images3)
+                    loss3, _, _ = self.criterion(outputs3, masks)
+                    
+                    # Progressive weighting: 0.3*L1 + 0.3*L2 + 0.4*L3
+                    combined_loss = 0.3 * loss1 + 0.3 * loss2 + 0.4 * loss3
+                    
+                    # Use final round outputs for metrics
+                    outputs = outputs3
+                    
+                else:
+                    outputs = self.model(images)
+                    combined_loss, focal_loss, dice_loss = self.criterion(outputs, masks)
                 
+                # Backpropagation
                 self.optimizer.zero_grad()
                 combined_loss.backward()
                 self.optimizer.step()
@@ -460,6 +497,7 @@ class ProgressiveTrainer:
         print(f"\n{'='*60}")
         print(f"Starting Progressive Training for {self.args.epochs} epochs")
         print(f"Stage duration: {self.stage_epochs} epochs")
+        print(f"Uncertainty Guidance: {'ENABLED' if self.use_uncertainty_guidance else 'DISABLED'}")
         print(f"Total samples - Train: {len(self.train_dataset)}, Test: {len(self.test_dataset)}")
         print(f"{'='*60}\n")
         
