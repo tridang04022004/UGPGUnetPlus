@@ -5,7 +5,7 @@ scikit-image==0.24.0
 scipy==1.13.1
 pyparsing==3.1.4
 
-# conda install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
+# pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
 
 # Additional packages for visualization and utilities
 Pillow>=8.0.0
