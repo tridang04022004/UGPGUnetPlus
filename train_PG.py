@@ -7,7 +7,7 @@ def main():
         description='PG-UNet+'
     )
     
-    parser.add_argument('--data-dir', type=str, default='./data')
+    parser.add_argument('--data-dir', type=str, default='./dataREAL')
     parser.add_argument('--epochs', type=int, default=200)
     parser.add_argument('--stage-epochs', type=int, default=40)
     parser.add_argument('--batch-size', type=int, default=8)

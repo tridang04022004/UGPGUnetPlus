@@ -59,11 +59,8 @@ tensorboard/
 
 # Dataset folders (uncomment if you don't want to track datasets)
 data/
-dataREAL/
 data/train/
 data/test/
-dataREAL/train/
-dataREAL/test/
 
 predictions/
 
