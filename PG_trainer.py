@@ -247,7 +247,7 @@ class ProgressiveTrainer:
                     
                     # Round 1: Coarse Prediction
                     outputs1 = self.model(images)
-                    loss1, _, _ = self.criterion(outputs1, masks)
+                    loss1, _, _, _ = self.criterion(outputs1, masks)
                     
                     with torch.no_grad():
                         probs1 = F.softmax(outputs1, dim=1)
@@ -257,7 +257,7 @@ class ProgressiveTrainer:
                     # Round 2: Uncertainty-Guided Refinement
                     guided_images2 = images * (1.0 + attention1)  # Amplify uncertain regions
                     outputs2 = self.model(guided_images2)
-                    loss2, _, _ = self.criterion(outputs2, masks)
+                    loss2, _, _, _ = self.criterion(outputs2, masks)
                     
                     with torch.no_grad():
                         probs2 = F.softmax(outputs2, dim=1)
@@ -267,7 +267,7 @@ class ProgressiveTrainer:
                     # Round 3: Final Refinement
                     guided_images3 = images * (1.0 + attention2)
                     outputs3 = self.model(guided_images3)
-                    loss3, _, _ = self.criterion(outputs3, masks)
+                    loss3, _, _, _ = self.criterion(outputs3, masks)
                     
                     # Progressive weighting: 0.3*L1 + 0.3*L2 + 0.4*L3
                     combined_loss = 0.3 * loss1 + 0.3 * loss2 + 0.4 * loss3
