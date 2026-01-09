@@ -118,12 +118,14 @@ class ProgressiveTrainer:
         self.model = UNet1(n_channels=3, n_classes=3).to(self.device)
         
         self.criterion = CombinedLoss(
-            focal_weight=0.5,      
-            dice_weight=0.5,       
+            focal_weight=0.45,      
+            dice_weight=0.45,       
+            boundary_weight=0.1,
             focal_gamma=2.0,       
             focal_alpha=None,      
             dice_smooth=1.0,       
-            ignore_background=False 
+            ignore_background=False,
+            boundary_theta=5.0
         )
         self.optimizer = optim.RMSprop(
             self.model.parameters(), 
@@ -408,7 +410,7 @@ class ProgressiveTrainer:
                     masks = masks.to(self.device)
                     
                     outputs = self.model(images)
-                    combined_loss, focal_loss, dice_loss = self.criterion(outputs, masks)
+                    combined_loss, focal_loss, dice_loss, boundary_loss = self.criterion(outputs, masks)
                     
                     total_loss += combined_loss.item()
                     

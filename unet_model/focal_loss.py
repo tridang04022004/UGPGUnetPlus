@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from .boundary_loss import BoundaryLoss
 
 
 class FocalLoss(nn.Module):
@@ -82,16 +83,19 @@ class DiceLossWithLogits(nn.Module):
 
 class CombinedLoss(nn.Module):
     def __init__(self, 
-                 focal_weight=0.5, 
-                 dice_weight=0.5,
+                 focal_weight=0.45, 
+                 dice_weight=0.45,
+                 boundary_weight=0.1,
                  focal_gamma=2.0,
                  focal_alpha=None,
                  dice_smooth=1.0,
-                 ignore_background=False):
+                 ignore_background=False,
+                 boundary_theta=5.0):
         super(CombinedLoss, self).__init__()
         
         self.focal_weight = focal_weight
         self.dice_weight = dice_weight
+        self.boundary_weight = boundary_weight
         
         self.focal_loss = FocalLoss(
             alpha=focal_alpha, 
@@ -103,11 +107,18 @@ class CombinedLoss(nn.Module):
             smooth=dice_smooth,
             ignore_background=ignore_background
         )
+        
+        self.boundary_loss = BoundaryLoss(
+            theta=boundary_theta
+        )
     
     def forward(self, inputs, targets):
         focal = self.focal_loss(inputs, targets)
         dice = self.dice_loss(inputs, targets)
+        boundary = self.boundary_loss(inputs, targets)
         
-        combined = self.focal_weight * focal + self.dice_weight * dice
+        combined = (self.focal_weight * focal + 
+                   self.dice_weight * dice + 
+                   self.boundary_weight * boundary)
         
-        return combined, focal, dice
+        return combined, focal, dice, boundary
