@@ -58,10 +58,14 @@ logs/
 tensorboard/
 
 # Dataset folders (uncomment if you don't want to track datasets)
-# data/train/
-# data/test/
-# dataREAL/train/
-# dataREAL/test/
+data/
+dataREAL/
+data/train/
+data/test/
+dataREAL/train/
+dataREAL/test/
+
+predictions/
 
 # Temporary files
 *.tmp
@@ -93,5 +97,8 @@ coverage.xml
 docs/_build/
 site/
 
-other models/
-dataREAL/
+/other models
+
+predict.py
+
+.gitignore
