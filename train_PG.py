@@ -11,7 +11,7 @@ def main():
     parser.add_argument('--epochs', type=int, default=200)
     parser.add_argument('--stage-epochs', type=int, default=40)
     parser.add_argument('--max-stage', type=int, default=4, choices=[1, 2, 3, 4], help='Maximum stage to train to (1=32x32, 2=64x64, 3=128x128, 4=256x256)')
-    parser.add_argument('--batch-size', type=int, default=8)
+    parser.add_argument('--batch-size', type=int, default=16)
     parser.add_argument('--lr', type=float, default=3e-4)
     parser.add_argument('--lr-decay', type=float, default=0.95,)
     parser.add_argument('--lr-decay-every', type=int, default=40)
