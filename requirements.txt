@@ -16,3 +16,4 @@ pathlib
 scikit-learn
 seaborn
 wandb
+albumentations
