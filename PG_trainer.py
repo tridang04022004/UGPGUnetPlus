@@ -109,6 +109,7 @@ class ProgressiveTrainer:
         self.stage_img_sizes = [32, 64, 128, 256]
         self.stage_models = [UNet1, UNet2, UNet3, UNet4]
         self.stage_epochs = args.stage_epochs  # Epochs per stage
+        self.max_stage = args.max_stage  # Maximum stage to train to
         self.use_uncertainty_guidance = args.use_uncertainty_guidance
         
         self.img_size = self.stage_img_sizes[0]
@@ -212,7 +213,8 @@ class ProgressiveTrainer:
             else:
                 new_params.append(param)
         
-        if new_stage < 4:
+        # Use lower LR for transferred layers in early stages to preserve learned features
+        if new_stage < self.max_stage:
             lr_new = self.args.lr
             lr_base = self.args.lr * 0.01  
         else:
@@ -499,12 +501,13 @@ class ProgressiveTrainer:
         print(f"\n{'='*60}")
         print(f"Starting Progressive Training for {self.args.epochs} epochs")
         print(f"Stage duration: {self.stage_epochs} epochs")
+        print(f"Maximum stage: {self.max_stage} ({self.stage_img_sizes[self.max_stage-1]}x{self.stage_img_sizes[self.max_stage-1]})")
         print(f"Uncertainty Guidance: {'ENABLED' if self.use_uncertainty_guidance else 'DISABLED'}")
         print(f"Total samples - Train: {len(self.train_dataset)}, Test: {len(self.test_dataset)}")
         print(f"{'='*60}\n")
         
         for epoch in range(self.start_epoch, self.args.epochs):
-            target_stage = min(ceil((epoch + 1) / self.stage_epochs), 4)
+            target_stage = min(ceil((epoch + 1) / self.stage_epochs), self.max_stage)
             
             if target_stage > self.current_stage:
                 self.upgrade_model(target_stage)
