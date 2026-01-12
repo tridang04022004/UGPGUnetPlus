@@ -83,9 +83,9 @@ class DiceLossWithLogits(nn.Module):
 
 class CombinedLoss(nn.Module):
     def __init__(self, 
-                 focal_weight=0.45, 
-                 dice_weight=0.45,
-                 boundary_weight=0.1,
+                 focal_weight=0.4, 
+                 dice_weight=0.4,
+                 boundary_weight=0.2,
                  focal_gamma=2.0,
                  focal_alpha=None,
                  dice_smooth=1.0,
