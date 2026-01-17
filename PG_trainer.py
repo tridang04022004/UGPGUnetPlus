@@ -21,6 +21,58 @@ from uncertainty import calculate_uncertainty_map, calculate_uncertainty_stats
 from TTA import predict_with_tta, get_tta_config
 
 
+class IoUPlateauDetector:
+    """
+    Detects IoU plateau during training to trigger boundary refinement and LR reduction.
+    
+    Monitors validation IoU and triggers when improvement stalls for patience epochs.
+    Designed to let region-based learning converge first, then refine boundaries.
+    """
+    def __init__(self, patience=7, min_delta=1e-4, min_patience=3):
+        """
+        Args:
+            patience: Number of epochs without improvement before triggering
+            min_delta: Minimum improvement threshold (epsilon)
+            min_patience: Minimum patience to prevent early triggering (default 3)
+        """
+        self.patience = max(patience, min_patience)
+        self.min_delta = min_delta
+        self.best_iou = 0.0
+        self.counter = 0
+        self.plateau_triggered = False
+    
+    def step(self, current_iou):
+        """
+        Update plateau detector with current IoU.
+        
+        Args:
+            current_iou: Current validation IoU
+            
+        Returns:
+            True if plateau detected (only once), False otherwise
+        """
+        if current_iou > self.best_iou + self.min_delta:
+            # Improvement detected
+            self.best_iou = current_iou
+            self.counter = 0
+            return False
+        else:
+            # No significant improvement
+            self.counter += 1
+            if self.counter >= self.patience and not self.plateau_triggered:
+                # Plateau detected for the first time
+                self.plateau_triggered = True
+                return True
+            return False
+    
+    def get_status(self):
+        """Get current status string for logging"""
+        if self.plateau_triggered:
+            return f"TRIGGERED (best IoU: {self.best_iou:.4f})"
+        else:
+            return f"Monitoring ({self.counter}/{self.patience}, best IoU: {self.best_iou:.4f})"
+
+
 def calculate_f1_score(pred, target):
     """Calculate F1 score"""
     tp = torch.sum((pred == 1) & (target == 1)).float()
@@ -101,6 +153,9 @@ class ProgressiveTrainer:
                     'uncertainty_guidance': args.use_uncertainty_guidance,
                     'use_tta': args.use_tta,
                     'tta_mode': args.tta_mode if args.use_tta else None,
+                    'plateau_detection': not args.disable_plateau_detection,
+                    'plateau_patience': args.plateau_patience if not args.disable_plateau_detection else None,
+                    'plateau_boundary_boost': args.plateau_boundary_boost if not args.disable_plateau_detection else None,
                 }
             )
             print("Wandb initialized successfully")
@@ -116,6 +171,19 @@ class ProgressiveTrainer:
         self.use_uncertainty_guidance = args.use_uncertainty_guidance
         self.use_tta = args.use_tta  # Test-Time Augmentation
         self.tta_transforms = get_tta_config(args.tta_mode) if args.use_tta else None
+        
+        # IoU Plateau Detection for adaptive boundary refinement (ENABLED BY DEFAULT)
+        self.use_plateau_detection = not args.disable_plateau_detection
+        if self.use_plateau_detection:
+            self.plateau_detector = IoUPlateauDetector(
+                patience=args.plateau_patience,
+                min_delta=args.plateau_min_delta,
+                min_patience=3
+            )
+            self.plateau_boundary_boost = args.plateau_boundary_boost
+            self.plateau_lr_factor = args.plateau_lr_factor
+        else:
+            self.plateau_detector = None
         
         self.img_size = self.stage_img_sizes[0]
         self.load_datasets()
@@ -530,6 +598,10 @@ class ProgressiveTrainer:
         print(f"Test-Time Augmentation: {'ENABLED' if self.use_tta else 'DISABLED'}")
         if self.use_tta:
             print(f"  TTA Transforms: {len(self.tta_transforms)} ({', '.join(self.tta_transforms)})")
+        print(f"IoU Plateau Detection: {'ENABLED' if self.use_plateau_detection else 'DISABLED'}")
+        if self.use_plateau_detection:
+            print(f"  Patience: {self.plateau_detector.patience} epochs | Min delta: {self.plateau_detector.min_delta}")
+            print(f"  Boundary boost: {self.criterion.boundary_weight:.3f} → {self.plateau_boundary_boost:.3f} | LR factor: {self.plateau_lr_factor}")
         print(f"Total samples - Train: {len(self.train_dataset)}, Test: {len(self.test_dataset)}")
         print(f"{'='*60}\n")
         
@@ -588,11 +660,39 @@ class ProgressiveTrainer:
             if (epoch + 1) % 10 == 0 or is_best:
                 self.log_predictions_to_wandb(num_samples=8)
             
-            if (epoch + 1) % self.args.lr_decay_every == 0:
-                for param_group in self.optimizer.param_groups:
-                    old_lr = param_group['lr']
-                    param_group['lr'] = old_lr * self.args.lr_decay
-                    print(f"Learning rate adjusted: {old_lr:.2e} -> {param_group['lr']:.2e}")
+            # IoU Plateau Detection: adaptive boundary refinement and LR reduction
+            if self.use_plateau_detection:
+                plateau_triggered = self.plateau_detector.step(test_iou)
+                
+                if plateau_triggered:
+                    print(f"\n{'🔔'*30}")
+                    print(f"🔔 IoU PLATEAU DETECTED at Epoch {epoch + 1}")
+                    print(f"🔔 No improvement for {self.plateau_detector.patience} epochs (best IoU: {self.plateau_detector.best_iou:.4f})")
+                    print(f"{'🔔'*30}")
+                    
+                    # (1) Increase boundary loss weight for boundary refinement
+                    old_boundary_weight = self.criterion.boundary_weight
+                    self.criterion.boundary_weight = self.plateau_boundary_boost
+                    print(f"  ✓ Boundary loss weight: {old_boundary_weight:.3f} → {self.criterion.boundary_weight:.3f}")
+                    
+                    # (2) Reduce learning rate for all parameter groups
+                    for i, param_group in enumerate(self.optimizer.param_groups):
+                        old_lr = param_group['lr']
+                        param_group['lr'] *= self.plateau_lr_factor
+                        print(f"  ✓ LR group {i}: {old_lr:.2e} → {param_group['lr']:.2e}")
+                    
+                    print(f"  → Shifting focus to boundary refinement\n")
+                    
+                    if self.args.use_wandb:
+                        wandb.log({
+                            'plateau/triggered_epoch': epoch + 1,
+                            'plateau/best_iou': self.plateau_detector.best_iou,
+                            'plateau/new_boundary_weight': self.criterion.boundary_weight,
+                        })
+                
+                # Log plateau status periodically
+                if (epoch + 1) % 5 == 0 and not self.plateau_detector.plateau_triggered:
+                    print(f"  Plateau detector: {self.plateau_detector.get_status()}")
         
         print("\n" + "="*60)
         print("Training completed!")
