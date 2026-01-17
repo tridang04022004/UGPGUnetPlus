@@ -18,6 +18,7 @@ from unet_model.unet import UNet1, UNet2, UNet3, UNet4
 from unet_model.dice_loss import dice_coeff
 from unet_model.focal_loss import CombinedLoss
 from uncertainty import calculate_uncertainty_map, calculate_uncertainty_stats
+from TTA import predict_with_tta, get_tta_config
 
 
 def calculate_f1_score(pred, target):
@@ -98,6 +99,8 @@ class ProgressiveTrainer:
                     'stage_epochs': args.stage_epochs,
                     'optimizer': 'RMSprop',
                     'uncertainty_guidance': args.use_uncertainty_guidance,
+                    'use_tta': args.use_tta,
+                    'tta_mode': args.tta_mode if args.use_tta else None,
                 }
             )
             print("Wandb initialized successfully")
@@ -111,6 +114,8 @@ class ProgressiveTrainer:
         self.stage_epochs = args.stage_epochs  # Epochs per stage
         self.max_stage = args.max_stage  # Maximum stage to train to
         self.use_uncertainty_guidance = args.use_uncertainty_guidance
+        self.use_tta = args.use_tta  # Test-Time Augmentation
+        self.tta_transforms = get_tta_config(args.tta_mode) if args.use_tta else None
         
         self.img_size = self.stage_img_sizes[0]
         self.load_datasets()
@@ -135,7 +140,7 @@ class ProgressiveTrainer:
         )
         
         self.best_loss = float('inf')
-        self.best_dice = 0.0
+        self.best_iou = 0.0
         self.history = {
             'train_loss': [], 'train_f1': [], 'train_dice': [], 'train_iou': [], 'train_uncertainty': [],
             'test_loss': [], 'test_f1': [], 'test_dice': [], 'test_iou': [], 'test_uncertainty': [],
@@ -405,19 +410,38 @@ class ProgressiveTrainer:
         all_preds = []
         all_targets = []
         
+        eval_desc = f'Evaluating (Stage {self.current_stage})'
+        if self.use_tta:
+            eval_desc += f' [TTA: {len(self.tta_transforms)} transforms]'
+        
         with torch.no_grad():
-            with tqdm(self.test_loader, desc=f'Evaluating (Stage {self.current_stage})') as pbar:
+            with tqdm(self.test_loader, desc=eval_desc) as pbar:
                 for images, masks in pbar:
                     images = images.to(self.device)
                     masks = masks.to(self.device)
                     
-                    outputs = self.model(images)
-                    combined_loss, focal_loss, dice_loss, boundary_loss = self.criterion(outputs, masks)
+                    if self.use_tta:
+                        # Use Test-Time Augmentation for robust predictions
+                        probs, preds = predict_with_tta(
+                            self.model, 
+                            images, 
+                            self.device, 
+                            transforms=self.tta_transforms
+                        )
+                        
+                        # Calculate loss on averaged probabilities
+                        # Convert probs back to logits for loss calculation
+                        outputs = torch.log(probs + 1e-10)  # Log probabilities (approximation)
+                        combined_loss, focal_loss, dice_loss, boundary_loss = self.criterion(outputs, masks)
+                    else:
+                        # Standard inference without TTA
+                        outputs = self.model(images)
+                        combined_loss, focal_loss, dice_loss, boundary_loss = self.criterion(outputs, masks)
+                        
+                        probs = F.softmax(outputs, dim=1)
+                        preds = torch.argmax(probs, dim=1)
                     
                     total_loss += combined_loss.item()
-                    
-                    probs = F.softmax(outputs, dim=1)
-                    preds = torch.argmax(probs, dim=1)
                     
                     # Calculate uncertainty map
                     uncertainty_map = calculate_uncertainty_map(probs)
@@ -455,7 +479,7 @@ class ProgressiveTrainer:
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'history': self.history,
-            'best_dice': self.best_dice,
+            'best_iou': self.best_iou,
         }
         
         latest_path = self.output_dir / 'latest_checkpoint_PG.pt'
@@ -467,7 +491,7 @@ class ProgressiveTrainer:
         if is_best:
             best_path = self.output_dir / 'best_model_PG.pt'
             torch.save(checkpoint, best_path)
-            print(f"✓ Saved best model (Dice: {self.best_dice:.4f}) to {best_path}")
+            print(f"✓ Saved best model (IoU: {self.best_iou:.4f}) to {best_path}")
             
             if self.args.use_wandb:
                 wandb.save(str(best_path))
@@ -492,7 +516,7 @@ class ProgressiveTrainer:
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         self.start_epoch = checkpoint['epoch'] + 1
         self.history = checkpoint.get('history', self.history)
-        self.best_dice = checkpoint.get('best_dice', 0.0)
+        self.best_iou = checkpoint.get('best_iou', 0.0)
         
         print(f"Loaded checkpoint from {checkpoint_path}")
         print(f"Resuming from epoch {self.start_epoch}, stage {self.current_stage}")
@@ -503,6 +527,9 @@ class ProgressiveTrainer:
         print(f"Stage duration: {self.stage_epochs} epochs")
         print(f"Maximum stage: {self.max_stage} ({self.stage_img_sizes[self.max_stage-1]}x{self.stage_img_sizes[self.max_stage-1]})")
         print(f"Uncertainty Guidance: {'ENABLED' if self.use_uncertainty_guidance else 'DISABLED'}")
+        print(f"Test-Time Augmentation: {'ENABLED' if self.use_tta else 'DISABLED'}")
+        if self.use_tta:
+            print(f"  TTA Transforms: {len(self.tta_transforms)} ({', '.join(self.tta_transforms)})")
         print(f"Total samples - Train: {len(self.train_dataset)}, Test: {len(self.test_dataset)}")
         print(f"{'='*60}\n")
         
@@ -552,9 +579,9 @@ class ProgressiveTrainer:
                     'test/uncertainty': test_uncertainty,
                 })
             
-            is_best = test_dice > self.best_dice
+            is_best = test_iou > self.best_iou
             if is_best:
-                self.best_dice = test_dice
+                self.best_iou = test_iou
             
             self.save_checkpoint(epoch, is_best=is_best)
             
@@ -573,7 +600,7 @@ class ProgressiveTrainer:
         self.print_summary()
         
         if self.args.use_wandb:
-            wandb.run.summary['best_dice'] = self.best_dice
+            wandb.run.summary['best_iou'] = self.best_iou
             wandb.run.summary['final_stage'] = self.current_stage
             wandb.finish()
             print("Wandb run finished")
